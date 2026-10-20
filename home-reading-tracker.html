@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Home Reading">
+<title>Home Reading Tracker</title>
+<style>
+:root{--bg:#f6f3ec;--card:#fff;--ink:#2b2a27;--muted:#77736a;--accent:#2f7d6d;--accent2:#e8f3f0;--warn:#c0492f;--line:#e2ddd2;}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:18px}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+h1{font-size:22px;margin:0}h2{font-size:20px;margin:0 0 12px}
+main{padding:20px;max-width:1100px;margin:0 auto}
+button{font:inherit;border:none;border-radius:12px;padding:12px 18px;background:var(--accent);color:#fff;cursor:pointer}
+button.ghost{background:transparent;color:var(--accent);border:2px solid var(--accent)}
+button.small{padding:6px 12px;font-size:15px}
+button.danger{background:var(--warn)}
+input,select,textarea{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;width:100%}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.name{background:var(--card);border:2px solid var(--line);border-radius:16px;padding:22px 10px;text-align:center;font-size:22px;font-weight:600;cursor:pointer}
+.name.done{border-color:var(--accent);background:var(--accent2)}
+.book{background:var(--card);border:3px solid var(--line);border-radius:14px;overflow:hidden;cursor:pointer;position:relative}
+.book img{width:100%;aspect-ratio:3/4;object-fit:cover;display:block;background:#eee}
+.book .t{padding:6px 8px;font-size:14px;text-align:center}
+.book.sel{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent2)}
+.book.sel::after{content:"✓";position:absolute;top:6px;right:6px;background:var(--accent);color:#fff;border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:18px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+.tabs button{background:var(--card);color:var(--ink);border:1px solid var(--line)}
+.tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.muted{color:var(--muted);font-size:15px}
+table{width:100%;border-collapse:collapse;font-size:16px}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
+.thumb{width:44px;height:58px;object-fit:cover;border-radius:6px}
+.pinpad{display:grid;grid-template-columns:repeat(3,80px);gap:12px;justify-content:center;margin-top:16px}
+.pinpad button{height:70px;font-size:26px;background:var(--card);color:var(--ink);border:1px solid var(--line)}
+.dots{text-align:center;font-size:34px;letter-spacing:12px;min-height:44px}
+.banner{background:var(--accent2);border-radius:12px;padding:12px 16px;margin-bottom:16px}
+.banner.sticky{position:sticky;top:var(--hh,64px);z-index:4;box-shadow:0 4px 10px rgba(0,0,0,.08)}
+.list-item{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header><h1 id="hTitle">📚 Home Reading</h1><div id="hBtns"></div></header>
+<main id="app"></main>
+
+<script>
+// ---------- Storage (IndexedDB, on this device only) ----------
+const DB='homeReading',STORE='kv';
+function idb(){return new Promise((res,rej)=>{const r=indexedDB.open(DB,1);r.onupgradeneeded=()=>r.result.createObjectStore(STORE);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+async function load(){const db=await idb();return new Promise(res=>{const q=db.transaction(STORE).objectStore(STORE).get('state');q.onsuccess=()=>res(q.result);q.onerror=()=>res(null)})}
+async function save(){const db=await idb();return new Promise(res=>{const t=db.transaction(STORE,'readwrite');t.objectStore(STORE).put(S,'state');t.oncomplete=res})}
+try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
+
+let S={pin:'1234',books:[],students:[],loans:[],session:null};
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const today=()=>new Date().toISOString().slice(0,10);
+const fmt=d=>new Date(d+'T12:00').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $=id=>document.getElementById(id);
+const book=id=>S.books.find(b=>b.id===id);
+const student=id=>S.students.find(s=>s.id===id);
+const byName=(a,b)=>a.name.localeCompare(b.name);
+const byTitle=(a,b)=>a.title.localeCompare(b.title);
+
+let view='child',teacherTab='session',pickStudent=null,picked=new Set(),pinEntry='',afterPin=null;
+
+function header(){
+  $('hTitle').textContent=view==='teacher'?'🔒 Teacher':'📚 Home Reading';
+  $('hBtns').innerHTML=view==='teacher'
+    ?'<button class="ghost small" onclick="goChild()">Exit teacher mode</button>'
+    :'<button class="ghost small" onclick="askPin(()=>{view=\'teacher\';render()})">Teacher</button>';
+}
+function render(){header();document.documentElement.style.setProperty('--hh',(document.querySelector('header').offsetHeight+8)+'px');({child:renderChild,pin:renderPin,teacher:renderTeacher})[view]()}
+function goChild(){view='child';pickStudent=null;render()}
+
+// ---------- PIN ----------
+function askPin(cb){afterPin=cb;pinEntry='';view='pin';render()}
+function renderPin(){
+  $('hBtns').innerHTML='<button class="ghost small" onclick="goChild()">Cancel</button>';
+  $('app').innerHTML=`<div class="card" style="max-width:360px;margin:30px auto;text-align:center"><h2>Enter teacher PIN</h2>
+  <div class="dots">${'●'.repeat(pinEntry.length)}</div>
+  <div class="pinpad">${[1,2,3,4,5,6,7,8,9,'⌫',0,'✓'].map(k=>`<button onclick="pinKey('${k}')">${k}</button>`).join('')}</div>
+  <p id="pinMsg" class="muted"></p></div>`;
+}
+function pinKey(k){
+  if(k==='⌫')pinEntry=pinEntry.slice(0,-1);
+  else if(k==='✓'){if(pinEntry===S.pin){afterPin();return}pinEntry='';renderPin();$('pinMsg').textContent='Incorrect PIN';return}
+  else if(pinEntry.length<8)pinEntry+=k;
+  renderPin();
+}
+
+// ---------- Child view ----------
+function renderChild(){
+  const s=S.session;
+  if(!s){$('app').innerHTML='<div class="card" style="text-align:center;margin-top:40px"><h2>No reading session is open</h2><p class="muted">Ask your teacher to open today\'s session.</p><button onclick="askPin(()=>{view=\'teacher\';teacherTab=\'session\';render()})">🔒 Open session</button></div>';return}
+  const done=new Set(S.loans.filter(l=>l.date===s.date).map(l=>l.studentId));
+  if(!pickStudent){
+    $('app').innerHTML=`<div class="banner row" style="justify-content:space-between"><span><b>Reading session: ${fmt(s.date)}</b> — tap your name.</span><button class="ghost small" onclick="closeSessionPin()">🔒 Close session</button></div>
+    <div class="grid">${[...S.students].sort(byName).map(st=>`<div class="name ${done.has(st.id)?'done':''}" onclick="chooseStudent('${st.id}')">${esc(st.name)}${done.has(st.id)?' ✓':''}</div>`).join('')||'<p class="muted">No class list yet.</p>'}</div>`;
+    return;
+  }
+  const st=student(pickStudent);
+  $('app').innerHTML=`<div class="banner sticky row" style="justify-content:space-between"><span>Hi <b>${esc(st.name)}</b>! Tap the books you are taking home.</span>
+    <span class="row"><button class="ghost" onclick="pickStudent=null;render()">Back</button><button onclick="saveChoice()">Done (<span id="cnt">${picked.size}</span>)</button></span></div>
+  <div class="grid">${[...S.books].sort(byTitle).map(b=>`<div class="book ${picked.has(b.id)?'sel':''}" id="b_${b.id}" onclick="toggleBook('${b.id}')"><img src="${b.img}" alt=""><div class="t">${esc(b.title)}</div></div>`).join('')}</div>`;
+}
+function chooseStudent(id){pickStudent=id;picked=new Set(S.loans.filter(l=>l.date===S.session.date&&l.studentId===id).map(l=>l.bookId));render();scrollTo(0,0)}
+function toggleBook(id){picked.has(id)?picked.delete(id):picked.add(id);$('b_'+id).classList.toggle('sel');$('cnt').textContent=picked.size}
+async function saveChoice(){
+  const d=S.session.date;
+  S.loans=S.loans.filter(l=>!(l.date===d&&l.studentId===pickStudent));
+  picked.forEach(b=>S.loans.push({id:uid(),studentId:pickStudent,bookId:b,date:d}));
+  await save();
+  const n=student(pickStudent).name;pickStudent=null;render();
+  const m=document.createElement('div');m.className='banner';m.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;z-index:9';
+  m.textContent=`Thanks ${n}! Enjoy your reading 📖`;document.body.appendChild(m);setTimeout(()=>m.remove(),2200);
+}
+
+// ---------- Teacher ----------
+function renderTeacher(){
+  const tabs=[['session','Session'],['overview','Overview'],['books','Books'],['class','Class list'],['settings','Backup & PIN']];
+  $('app').innerHTML=`<div class="tabs">${tabs.map(([k,l])=>`<button class="${teacherTab===k?'on':''}" onclick="teacherTab='${k}';render()">${l}</button>`).join('')}</div><div id="tbody"></div>`;
+  ({session:tSession,overview:tOverview,books:tBooks,class:tClass,settings:tSettings})[teacherTab]();
+}
+function tSession(){
+  const s=S.session;
+  $('tbody').innerHTML=`<div class="card"><h2>Reading session</h2>
+  ${s?`<p>Session open for <b>${fmt(s.date)}</b>. ${new Set(S.loans.filter(l=>l.date===s.date).map(l=>l.studentId)).size} of ${S.students.length} children have chosen.</p>
+     <div class="row"><button onclick="goChild()">Hand iPad to class</button><button class="ghost" onclick="closeSession()">Close session</button></div>`
+  :`<p class="muted">Open a session so children can record the books they take home.</p>
+     <div class="row"><input type="date" id="sDate" value="${today()}" style="max-width:220px"><button onclick="openSession()">Open session</button></div>`}
+  </div>`;
+}
+async function openSession(){S.session={date:$('sDate').value||today()};await save();render()}
+function closeSessionPin(){askPin(async()=>{S.session=null;await save();view='child';pickStudent=null;render()})}
+async function closeSession(){S.session=null;await save();render()}
+
+let ovMode='books',ovQ='';
+function tOverview(){
+  const dates=[...new Set(S.loans.map(l=>l.date))].sort().reverse();
+  let body='';
+  if(ovMode==='books'){
+    const rows=[...S.books].sort(byTitle).filter(b=>b.title.toLowerCase().includes(ovQ.toLowerCase())).map(b=>{
+      const ls=S.loans.filter(l=>l.bookId===b.id).sort((a,c)=>c.date.localeCompare(a.date));
+      const last=ls[0];
+      return `<tr><td><img class="thumb" src="${b.img}"></td><td><b>${esc(b.title)}</b><br><span class="muted">Borrowed ${ls.length} time${ls.length===1?'':'s'}</span></td>
+      <td>${last?`<b>${esc(student(last.studentId)?.name||'(removed)')}</b><br><span class="muted">${fmt(last.date)}</span>`:'<span class="muted">Never borrowed</span>'}</td>
+      <td class="muted">${ls.slice(1,4).map(l=>`${esc(student(l.studentId)?.name||'?')} (${fmt(l.date)})`).join('<br>')}</td></tr>`}).join('');
+    body=`<input placeholder="Search a book title…" value="${esc(ovQ)}" oninput="ovQ=this.value;tOverviewTable()" id="ovSearch" style="margin-bottom:12px">
+    <table><thead><tr><th></th><th>Book</th><th>Last borrowed by</th><th>Before that</th></tr></thead><tbody id="ovRows">${rows}</tbody></table>`;
+  } else if(ovMode==='dates'){
+    body=dates.length?dates.map(d=>{
+      const ls=S.loans.filter(l=>l.date===d);const sids=[...new Set(ls.map(l=>l.studentId))];
+      const missing=S.students.filter(s=>!sids.includes(s.id)).map(s=>s.name);
+      return `<div class="card"><h2>${fmt(d)}</h2><table>${sids.map(id=>`<tr><td style="width:30%"><b>${esc(student(id)?.name||'(removed)')}</b></td><td>${ls.filter(l=>l.studentId===id).map(l=>esc(book(l.bookId)?.title||'(removed book)')).join(', ')}</td></tr>`).join('')}</table>
+      ${missing.length?`<p class="muted">No books recorded: ${missing.map(esc).join(', ')}</p>`:''}</div>`}).join(''):'<p class="muted">No sessions recorded yet.</p>';
+  } else {
+    body=`<table><thead><tr><th>Child</th><th>Most recent books</th><th>Total</th></tr></thead><tbody>${[...S.students].sort(byName).map(s=>{
+      const ls=S.loans.filter(l=>l.studentId===s.id).sort((a,c)=>c.date.localeCompare(a.date));
+      const ld=ls[0]?.date;
+      return `<tr><td><b>${esc(s.name)}</b></td><td>${ld?`${ls.filter(l=>l.date===ld).map(l=>esc(book(l.bookId)?.title||'?')).join(', ')} <span class="muted">(${fmt(ld)})</span>`:'<span class="muted">None yet</span>'}</td><td>${ls.length}</td></tr>`}).join('')}</tbody></table>`;
+  }
+  $('tbody').innerHTML=`<div class="tabs"><button class="${ovMode==='books'?'on':''}" onclick="ovMode='books';render()">By book (who had it last)</button><button class="${ovMode==='dates'?'on':''}" onclick="ovMode='dates';render()">By session</button><button class="${ovMode==='kids'?'on':''}" onclick="ovMode='kids';render()">By child</button></div><div class="card">${body}</div>`;
+}
+function tOverviewTable(){const v=ovQ;tOverview();const i=$('ovSearch');i.focus();i.setSelectionRange(v.length,v.length)}
+
+function tBooks(){
+  $('tbody').innerHTML=`<div class="card"><h2>Add a book</h2>
+  <div class="row"><label class="ghost" style="border:2px solid var(--accent);color:var(--accent);border-radius:12px;padding:10px 16px;cursor:pointer">📷 Photo of cover<input type="file" accept="image/*" capture="environment" id="bImg" class="hidden" onchange="previewCover(this)"></label>
+  <img id="bPrev" class="thumb hidden"><input id="bTitle" placeholder="Book title" style="flex:1;min-width:200px"><button onclick="addBook()">Add book</button></div>
+  <p class="muted">Tip: photograph covers flat, filling the frame. Photos are shrunk and stored only on this iPad.</p></div>
+  <div class="card"><h2>${S.books.length} books</h2>${[...S.books].sort(byTitle).map(b=>`<div class="list-item"><span class="row"><img class="thumb" src="${b.img}">${esc(b.title)}</span><span class="row"><button class="ghost small" onclick="renameBook('${b.id}')">Rename</button><button class="danger small" onclick="delBook('${b.id}')">Remove</button></span></div>`).join('')}</div>`;
+}
+let pendingImg=null;
+function previewCover(inp){
+  const f=inp.files[0];if(!f)return;const r=new FileReader();
+  r.onload=()=>{const im=new Image();im.onload=()=>{const W=360,sc=W/im.width,c=document.createElement('canvas');c.width=W;c.height=im.height*sc;c.getContext('2d').drawImage(im,0,0,c.width,c.height);pendingImg=c.toDataURL('image/jpeg',0.75);$('bPrev').src=pendingImg;$('bPrev').classList.remove('hidden');$('bTitle').focus()};im.src=r.result};
+  r.readAsDataURL(f);
+}
+async function addBook(){
+  const t=$('bTitle').value.trim();
+  if(!pendingImg||!t){alert('Please add a cover photo and a title.');return}
+  S.books.push({id:uid(),title:t,img:pendingImg});pendingImg=null;await save();render();
+}
+async function renameBook(id){const b=book(id);const t=prompt('New title',b.title);if(t&&t.trim()){b.title=t.trim();await save();render()}}
+async function delBook(id){if(confirm('Remove this book? Its borrowing history will show "(removed book)".')){S.books=S.books.filter(b=>b.id!==id);await save();render()}}
+
+function tClass(){
+  $('tbody').innerHTML=`<div class="card"><h2>Add children</h2><textarea id="cNames" rows="4" placeholder="Type or paste names, one per line"></textarea><div class="row" style="margin-top:10px"><button onclick="addNames()">Add</button></div></div>
+  <div class="card"><h2>${S.students.length} children</h2>${[...S.students].sort(byName).map(s=>`<div class="list-item"><span>${esc(s.name)}</span><span class="row"><button class="ghost small" onclick="renameStudent('${s.id}')">Rename</button><button class="danger small" onclick="delStudent('${s.id}')">Remove</button></span></div>`).join('')}</div>`;
+}
+async function addNames(){$('cNames').value.split('\n').map(n=>n.trim()).filter(Boolean).forEach(n=>S.students.push({id:uid(),name:n}));await save();render()}
+async function renameStudent(id){const s=student(id);const n=prompt('Name',s.name);if(n&&n.trim()){s.name=n.trim();await save();render()}}
+async function delStudent(id){if(confirm('Remove this child from the class list?')){S.students=S.students.filter(s=>s.id!==id);await save();render()}}
+
+function tSettings(){
+  $('tbody').innerHTML=`<div class="card"><h2>Backup</h2><p class="muted">Data lives only in this iPad's browser. Export a backup every half-term and save it to Files or the school server.</p>
+  <div class="row"><button onclick="exportData()">⬇️ Export backup</button><button onclick="exportCSV()">📊 Export CSV</button><label style="border:2px solid var(--accent);color:var(--accent);border-radius:12px;padding:10px 16px;cursor:pointer">⬆️ Import backup<input type="file" accept=".json,application/json" class="hidden" onchange="importData(this)"></label></div></div>
+  <div class="card"><h2>Change teacher PIN</h2><div class="row"><input id="newPin" type="password" inputmode="numeric" placeholder="New PIN (4–8 digits)" style="max-width:240px"><button onclick="changePin()">Save PIN</button></div>
+  <p class="muted">Default PIN is 1234. Please change it.</p></div>
+  <div class="card"><h2>Start a new year</h2><p class="muted">Clears borrowing history only (books and class list stay). Export a backup first.</p><button class="danger" onclick="clearLoans()">Clear borrowing history</button></div>`;
+}
+function exportData(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(S)],{type:'application/json'}));a.download=`home-reading-backup-${today()}.json`;a.click()}
+function exportCSV(){
+  const q=v=>'"'+String(v).replace(/"/g,'""')+'"';
+  const rows=[...S.loans].sort((a,b)=>b.date.localeCompare(a.date)||(student(a.studentId)?.name||'').localeCompare(student(b.studentId)?.name||''))
+    .map(l=>[l.date,student(l.studentId)?.name||'(removed)',book(l.bookId)?.title||'(removed book)'].map(q).join(','));
+  const csv='\uFEFF'+['Date,Child,Book'].concat(rows).join('\r\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=`home-reading-${today()}.csv`;a.click();
+}
+function importData(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=async()=>{try{const d=JSON.parse(r.result);if(!d.books||!d.students)throw 0;if(confirm('Replace all current data with this backup?')){S=d;await save();render()}}catch(e){alert('That file is not a valid backup.')}};r.readAsText(f)}
+async function changePin(){const p=$('newPin').value;if(!/^\d{4,8}$/.test(p)){alert('PIN must be 4–8 digits.');return}S.pin=p;await save();alert('PIN updated.');render()}
+async function clearLoans(){if(confirm('Delete ALL borrowing history?')){S.loans=[];S.session=null;await save();render()}}
+
+(async()=>{const d=await load();if(d)S=d;render()})();
+</script>
+</body>
+</html>
